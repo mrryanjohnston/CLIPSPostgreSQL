@@ -1,0 +1,24 @@
+#!/usr/bin/env sh
+# CLIPSPostgreSQL @VERSION@
+#
+# The installed binary is kept out of the way in libexec and reached through
+# this wrapper, which is what lands on PATH.
+
+# A vendored build installs the libpq it was built against next to itself,
+# in a directory the loader does not search. This is where that is said. A
+# build against the system libpq leaves it empty, and the block does nothing.
+LIBPQ_DIR="@LIBPQ_DIR@"
+if [ -n "$LIBPQ_DIR" ]; then
+    LD_LIBRARY_PATH="$LIBPQ_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    DYLD_LIBRARY_PATH="$LIBPQ_DIR${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
+    export LD_LIBRARY_PATH DYLD_LIBRARY_PATH
+fi
+
+case "$1" in
+  -v|-V|--version)
+    echo "CLIPSPostgreSQL @VERSION@"
+    exit 0
+    ;;
+esac
+
+exec "@REAL@" "$@"

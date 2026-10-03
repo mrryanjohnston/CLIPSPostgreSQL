@@ -1,0 +1,251 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A new push to a branch makes the run already in flight for it pointless.
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Does the source still compile against every supported libpq, and bind
+  # what it should? Two headers per version and no linking, so this is the
+  # fastest thing here and the first to say a version gate has gone wrong.
+  versions:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache the CLIPS download
+        uses: actions/cache@v4
+        with:
+          path: |
+            clips_core_source_642.tar.gz
+            vendor/clips-source
+          key: clips-${{ runner.os }}-${{ hashFiles('makefile') }}
+          restore-keys: clips-${{ runner.os }}-
+
+      # check-versions compiles against the CLIPS headers, which it fetches
+      # itself; it does not need a libpq of its own, and links nothing.
+      - name: Compile against every supported PostgreSQL
+        run: make check-versions
+
+  # The build the README describes first: everything downloaded, checked and
+  # built from source, and the tests run against a server built the same way.
+  vendored:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # bison, flex and perl build PostgreSQL's parsers, which its releases
+      # have not shipped pre-generated since 17.
+      - name: Install build tools
+        run: sudo apt-get update && sudo apt-get install -y bison flex valgrind
+
+      # Only what was downloaded is cached, never a build tree:
+      # vendor/clips-build holds object files whose timestamps would come back
+      # older than a fresh checkout's sources, and the CLIPS sub-make would
+      # skip work it should do. vendor/clips-source is a pristine tree that
+      # nothing builds in, so it caches safely.
+      - name: Cache vendored downloads
+        uses: actions/cache@v4
+        with:
+          path: |
+            vendor/postgresql-*.tar.bz2
+            clips_core_source_642.tar.gz
+            vendor/clips-source
+          key: deps-${{ runner.os }}-${{ hashFiles('makefile') }}
+          restore-keys: deps-${{ runner.os }}-
+
+      - name: Build
+        run: make
+
+      # A static check over the sources plus the vendored libpq.sgml, so it
+      # runs before the suite: a stale API.md is a faster, clearer failure
+      # than whatever the tests would say about it.
+      - name: Check API.md is current
+        run: make docs-check
+
+      # The server the tests want. Everything above is happy without it.
+      - name: Build the PostgreSQL server
+        run: make pg-server
+
+      # The suite, and the examples with it: tests/run.sh starts one
+      # cluster and runs both against it.
+      - name: Run test suite
+        run: make test
+
+      # The same suite again under valgrind, where a wrapper that reads freed
+      # memory on its way to the right return value stops being a pass.
+      - name: Run test suite under valgrind
+        run: make test-valgrind
+
+      # "make install" is the one path the README documents that no other step
+      # exercises. A throwaway PREFIX proves the wrapper is generated, lands
+      # on PATH, and can run a real script -- and that a build carries no
+      # install location in it, since this one was not built for this prefix.
+      #
+      # The vendored libpq is moved out of the way for that last part: with
+      # the build tree gone, the only way the binary can find a libpq new
+      # enough to have PQclosePrepared in it is the copy install put beside
+      # itself, which is what the wrapper points the loader at.
+      - name: Install into a temporary prefix
+        run: |
+          set -eux
+          prefix="$(mktemp -d)"
+          make install PREFIX="$prefix"
+          test -x "$prefix/bin/CLIPSPostgreSQL"
+          "$prefix/bin/CLIPSPostgreSQL" --version
+          echo '(println "libpq " (pq-lib-version))(exit)' > /tmp/version.bat
+          mv vendor/pgsql-* /tmp/hidden-libpq
+          "$prefix/bin/CLIPSPostgreSQL" -f2 /tmp/version.bat
+          mv /tmp/hidden-libpq "vendor/pgsql-$(make print-pg-version)"
+          make uninstall PREFIX="$prefix"
+          test ! -e "$prefix/bin/CLIPSPostgreSQL"
+
+  # Every supported major, end to end: the suite and the examples, against a
+  # libpq built from that release's own source.
+  #
+  # Only libpq is built for each -- minutes, not the tens of minutes a server
+  # would take -- because what varies between these legs is the client. The
+  # server does not have to match and does not have to vary: one packaged
+  # PostgreSQL serves all of them, which is the same thing
+  # scripts/test-versions.sh does locally.
+  majors:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    strategy:
+      fail-fast: false
+      matrix:
+        pg: ['14.24', '15.19', '16.15', '17.11', '18.6', '19beta3']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build tools and a server to test against
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bison flex postgresql-16
+
+      # The tarball and the built libpq both keyed on the version, so a leg
+      # that has run before starts at the CLIPS build. vendor/pgsql-* is
+      # usable as it stands, which is what makes caching it worth anything.
+      - name: Cache the vendored PostgreSQL
+        uses: actions/cache@v4
+        with:
+          path: |
+            vendor/postgresql-${{ matrix.pg }}.tar.bz2
+            vendor/pgsql-${{ matrix.pg }}
+            clips_core_source_642.tar.gz
+            vendor/clips-source
+          key: pg-${{ matrix.pg }}-${{ runner.os }}-${{ hashFiles('makefile') }}
+
+      - name: Build against PostgreSQL ${{ matrix.pg }}
+        run: make PG_VERSION=${{ matrix.pg }}
+
+      # tests/run.sh finds /usr/lib/postgresql/16/bin by itself and starts a
+      # cluster of its own; the client under test is the one just built.
+      - name: Run test suite and examples
+        run: make PG_VERSION=${{ matrix.pg }} test
+
+  # Every CLIPS the wrappers claim to build against: the 6.4.2 release and
+  # the two Subversion branches at the revisions the makefile pins. What
+  # varies here is the interpreter underneath, so one libpq -- the pinned
+  # one, built the way the vendored job builds it -- serves all three.
+  clips:
+    name: clips (${{ matrix.clips }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    strategy:
+      fail-fast: false
+      matrix:
+        clips: ['6.4.2', svn-6x, svn-7x]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # subversion for the branch legs; a server for the suite to talk to,
+      # which does not have to be the version libpq was built from.
+      - name: Install build tools and a server to test against
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bison flex subversion postgresql-16
+
+      # Keyed on the CLIPS version, so a leg that has run before starts at
+      # the CLIPS build: vendor/pgsql-* is usable as it stands, and each leg
+      # keeps its own copy rather than racing the others for one entry.
+      - name: Cache the vendored sources
+        uses: actions/cache@v4
+        with:
+          path: |
+            vendor/postgresql-*.tar.bz2
+            vendor/pgsql-*
+            clips_core_source_642.tar.gz
+            vendor/clips-source
+          key: clips-${{ matrix.clips }}-${{ runner.os }}-${{ hashFiles('makefile') }}
+          restore-keys: clips-${{ matrix.clips }}-${{ runner.os }}-
+
+      - name: Build against CLIPS ${{ matrix.clips }}
+        run: make CLIPS_VERSION=${{ matrix.clips }}
+
+      - name: Report what it built against
+        run: make print-clips CLIPS_VERSION=${{ matrix.clips }}
+
+      # tests/run.sh finds /usr/lib/postgresql/16/bin by itself and starts a
+      # cluster of its own; the client under test is the one just built.
+      - name: Run test suite and examples
+        run: make CLIPS_VERSION=${{ matrix.clips }} test
+
+  # The other path the README documents: link the libpq the machine already
+  # has, download nothing, and let the tests use that installation's server.
+  system-libpq:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install PostgreSQL 18 from apt.postgresql.org
+        run: |
+          set -eux
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+              --fail https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] \
+                https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+              | sudo tee /etc/apt/sources.list.d/pgdg.list
+          sudo apt-get update
+          sudo apt-get install -y postgresql-18 libpq-dev
+
+      - name: Cache the CLIPS download
+        uses: actions/cache@v4
+        with:
+          path: |
+            clips_core_source_642.tar.gz
+            vendor/clips-source
+          key: clips-${{ runner.os }}-${{ hashFiles('makefile') }}
+          restore-keys: clips-${{ runner.os }}-
+
+      - name: Build against the system libpq
+        run: make PG_SYSTEM=1
+
+      # With no source tree to read it from, the generator fetches the one
+      # file for the version pg_config reports -- which is the other half of
+      # "the documentation describes the library that was linked".
+      - name: Check API.md is current
+        run: make PG_SYSTEM=1 docs-check
+
+      # tests/run.sh finds /usr/lib/postgresql/18/bin by itself and starts a
+      # cluster of its own under tests/tmp.
+      - name: Run test suite
+        run: make PG_SYSTEM=1 test

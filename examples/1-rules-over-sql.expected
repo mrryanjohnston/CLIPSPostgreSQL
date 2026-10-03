@@ -1,0 +1,10 @@
+# Lines that must appear in this example's output, checked by tests/run.sh.
+# Each is matched as a substring of some line, so the parts that differ from
+# machine to machine -- the socket path, the server version -- are left out
+# rather than pinned. What is pinned is what the example claims to show: the
+# rows it read, and the conclusions the rules drew from them.
+read 5 rows into facts
+findings:
+  flange: over 10kg
+  housing: over 10kg
+  shim: no weight recorded

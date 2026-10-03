@@ -1,0 +1,22 @@
+# Lines that must appear in this example's output, checked by tests/run.sh.
+# Each is matched as a substring of some line. What is pinned is each
+# reading function's answer over the same five rows: the text libpq hands
+# over, the values the row and result functions convert it to, and what the
+# forms that run the command themselves infer and answer.
+1. field by field: 5 rows of 4 columns
+   id=5 name=shim weight=nil in_use=f
+   weight of row 4 is nil, and stringp says TRUE of the others
+   pq-row-to-multifield: (1 "flange" 12.5 TRUE)
+   the weight is a float: TRUE
+   pq-row-to-fact: bolt weighs 0.4
+   pq-row-to-instance: [gasket] is gasket, in use FALSE
+   pq-result-to-multifields: 20 fields, 4 per row
+   with headers: ("id" "name" "weight" "in_use" 1 "flange" 12.5 TRUE) ...
+   pq-result-to-facts: 5 facts, 5 in working memory
+   the bolt's fact is the one from step 2: TRUE
+   pq-result-to-instances: 5 instances, the first two named [flange] and [bolt]
+   pq-exec-to-multifields: ("flange" 12.5 "bolt" 0.4 "housing" 44.0)
+   pq-exec-to-facts, deftemplate inferred: 5 facts, still 5 in working memory
+   pq-exec-to-instances, defclass inferred: 2 instances of PARTS, the first flange
+   pq-exec-to-instances, named: 3 parts in use weighing 56.9, 2 idle
+the rule found shim has no weight recorded

@@ -1,0 +1,8 @@
+# See 1-rules-over-sql.expected for what this file is. The notifying
+# backend's process id is part of the output and is different every run, so
+# the line for it stops before the number.
+listening on channel orders
+notifications: 3
+  order: 12 x gasket
+  order: 3 x flange
+  large order: 500 x bolt (backend

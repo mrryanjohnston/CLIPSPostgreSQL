@@ -1,0 +1,6 @@
+# See 1-rules-over-sql.expected for what this file is.
+loaded 400 rows
+  intake: 200 readings, warmest 13.0, average 12.01
+  boiler: 200 readings, warmest 86.0, average 82.99
+  boiler is running hot
+the three most recent readings, as the server prints them:
