@@ -27,8 +27,12 @@
 (expect "no command-line options were passed to the backend"
         "" (pq-options ?*conn*))
 
-(expect-true "the server is PostgreSQL 18 or later"
-             (>= (pq-server-version ?*conn*) 180000))
+; Which server this is depends on the machine: the CI legs that vary the
+; client run against a packaged server of another major, and the workflow
+; says so. What is fixed is the shape of the number -- major times 10000
+; plus minor, for every release since 10.
+(expect-true "the server version is readable"
+             (>= (pq-server-version ?*conn*) 100000))
 (expect "the frontend/backend protocol is version 3"
         3 (pq-protocol-version ?*conn*))
 
